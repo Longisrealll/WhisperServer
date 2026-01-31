@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Voice Recorder with Visualization</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    button { margin: 5px; padding: 10px 20px; }
+    #status { margin-top: 10px; font-weight: bold; }
+    #result { margin-top: 20px; }
+    #progressContainer { width: 100%; background: #eee; height: 20px; margin-top: 10px; border-radius: 10px; }
+    #progressBar { height: 100%; width: 0; background: #4caf50; border-radius: 10px; }
+    canvas { border: 1px solid #ccc; margin-top: 10px; display: block; }
+  </style>
+</head>
+<body>
+  <h1>Voice Recorder & Transcription</h1>
+  <button id="startBtn">Start Recording</button>
+  <button id="stopBtn" disabled>Stop Recording</button>
+
+  <div id="status">Status: Idle</div>
+
+  <div id="progressContainer"><div id="progressBar"></div></div>
+
+  <canvas id="waveform" width="600" height="100"></canvas>
+
+  <div id="result"></div>
+
+  <script>
+    let mediaRecorder;
+    let audioChunks = [];
+    let audioContext;
+    let analyser;
+    let dataArray;
+    let animationId;
+    const canvas = document.getElementById('waveform');
+    const canvasCtx = canvas.getContext('2d');
+
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusDiv = document.getElementById('status');
+    const resultDiv = document.getElementById('result');
+    const progressBar = document.getElementById('progressBar');
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioChunks = [];
+
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+        mediaRecorder.ondataavailable = e => {
+          if (e.data.size > 0) audioChunks.push(e.data);
+        };
+
+        mediaRecorder.start();
+        statusDiv.textContent = "Status: Recording...";
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+
+        // Setup waveform visualization
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        source.connect(analyser);
+        analyser.fftSize = 2048;
+        const bufferLength = analyser.fftSize;
+        dataArray = new Uint8Array(bufferLength);
+
+        function draw() {
+          animationId = requestAnimationFrame(draw);
+          analyser.getByteTimeDomainData(dataArray);
+
+          canvasCtx.fillStyle = 'white';
+          canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+          canvasCtx.lineWidth = 2;
+          canvasCtx.strokeStyle = 'black';
+          canvasCtx.beginPath();
+
+          const sliceWidth = canvas.width * 1.0 / bufferLength;
+          let x = 0;
+
+          for (let i = 0; i < bufferLength; i++) {
+            const v = dataArray[i] / 128.0;
+            const y = v * canvas.height / 2;
+            if (i === 0) {
+              canvasCtx.moveTo(x, y);
+            } else {
+              canvasCtx.lineTo(x, y);
+            }
+            x += sliceWidth;
+          }
+          canvasCtx.lineTo(canvas.width, canvas.height / 2);
+          canvasCtx.stroke();
+        }
+
+        draw();
+
+      } catch (err) {
+        console.error(err);
+        alert("Microphone access denied or not available.");
+      }
+    });
+
+    stopBtn.addEventListener('click', async () => {
+      mediaRecorder.onstop = async () => {
+        cancelAnimationFrame(animationId);
+        audioContext.close();
+
+        statusDiv.textContent = "Status: Uploading...";
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+
+        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+        const formData = new FormData();
+        formData.append('file', blob, 'recording.webm');
+
+        try {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', 'http://127.0.0.1:8000/uploadFile', true);
+
+          xhr.upload.onprogress = e => {
+            if (e.lengthComputable) {
+              const percentComplete = (e.loaded / e.total) * 100;
+              progressBar.style.width = percentComplete + '%';
+            }
+          };
+
+          xhr.onload = () => {
+            if (xhr.status === 200) {
+              const data = JSON.parse(xhr.responseText);
+              if (data.status === "ok") {
+                resultDiv.innerHTML = `
+                  <p><strong>Text:</strong> ${data.result.text}</p>
+                  <p><strong>Language:</strong> ${data.result.language}</p>
+                `;
+              } else {
+                resultDiv.textContent = "Error in processing the audio.";
+              }
+            } else {
+              resultDiv.textContent = "Upload failed.";
+            }
+            progressBar.style.width = '0%';
+            statusDiv.textContent = "Status: Idle";
+          };
+
+          xhr.onerror = () => {
+            resultDiv.textContent = "Failed to send audio to server.";
+            progressBar.style.width = '0%';
+            statusDiv.textContent = "Status: Idle";
+          };
+
+          xhr.send(formData);
+        } catch (err) {
+          console.error(err);
+          resultDiv.textContent = "Failed to send audio to server.";
+          progressBar.style.width = '0%';
+          statusDiv.textContent = "Status: Idle";
+        }
+      };
+
+      mediaRecorder.stop();
+    });
+  </script>
+</body>
+</html>
