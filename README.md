@@ -1,1 +1,2 @@
 # WhisperServer
+## Setting up
